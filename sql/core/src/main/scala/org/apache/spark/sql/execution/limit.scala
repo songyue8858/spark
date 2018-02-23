@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, ExprCode, LazilyGeneratedOrdering}
 import org.apache.spark.sql.catalyst.plans.physical._
-import org.apache.spark.sql.execution.exchange.ShuffleExchange
+import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.util.Utils
 
 /**
@@ -40,7 +40,7 @@ case class CollectLimitExec(limit: Int, child: SparkPlan) extends UnaryExecNode 
   protected override def doExecute(): RDD[InternalRow] = {
     val locallyLimited = child.execute().mapPartitionsInternal(_.take(limit))
     val shuffled = new ShuffledRowRDD(
-      ShuffleExchange.prepareShuffleDependency(
+      ShuffleExchangeExec.prepareShuffleDependency(
         locallyLimited, child.output, SinglePartition, serializer))
     shuffled.mapPartitionsInternal(_.take(limit))
   }
@@ -71,8 +71,7 @@ trait BaseLimitExec extends UnaryExecNode with CodegenSupport {
   }
 
   override def doConsume(ctx: CodegenContext, input: Seq[ExprCode], row: ExprCode): String = {
-    val stopEarly = ctx.freshName("stopEarly")
-    ctx.addMutableState("boolean", stopEarly, s"$stopEarly = false;")
+    val stopEarly = ctx.addMutableState(ctx.JAVA_BOOLEAN, "stopEarly") // init as stopEarly = false
 
     ctx.addNewFunction("stopEarly", s"""
       @Override
@@ -80,8 +79,7 @@ trait BaseLimitExec extends UnaryExecNode with CodegenSupport {
         return $stopEarly;
       }
     """, inlineToOuterClass = true)
-    val countTerm = ctx.freshName("count")
-    ctx.addMutableState("int", countTerm, s"$countTerm = 0;")
+    val countTerm = ctx.addMutableState(ctx.JAVA_INT, "count") // init as count = 0
     s"""
        | if ($countTerm < $limit) {
        |   $countTerm += 1;
@@ -153,7 +151,7 @@ case class TakeOrderedAndProjectExec(
       }
     }
     val shuffled = new ShuffledRowRDD(
-      ShuffleExchange.prepareShuffleDependency(
+      ShuffleExchangeExec.prepareShuffleDependency(
         localTopK, child.output, SinglePartition, serializer))
     shuffled.mapPartitions { iter =>
       val topK = org.apache.spark.util.collection.Utils.takeOrdered(iter.map(_.copy()), limit)(ord)
